@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  # Database store
+  mongodb:
+    image: mongo:6.0
+    container_name: cyberwall_mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - xdr_net
+
+  # Express REST & WebSocket API backend
+  backend:
+    build: ../backend
+    container_name: cyberwall_backend
+    environment:
+      - PORT=5000
+      - MONGO_URI=mongodb://mongodb:27017/cyberwall_xdr
+      - JWT_SECRET=supersecretcyberwallxdrkey12345
+      - JWT_REFRESH_SECRET=supersecretrefreshcyberwallxdrkey54321
+      - JWT_EXPIRE=1h
+      - JWT_REFRESH_EXPIRE=7d
+      - NODE_ENV=production
+    ports:
+      - "5000:5000"
+    depends_on:
+      - mongodb
+    networks:
+      - xdr_net
+
+  # React Client Build container
+  frontend:
+    build: ../frontend
+    container_name: cyberwall_frontend
+    depends_on:
+      - backend
+    networks:
+      - xdr_net
+
+  # Nginx Gateway reverse proxy
+  proxy:
+    build: ../nginx
+    container_name: cyberwall_proxy
+    ports:
+      - "80:80"
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - xdr_net
+
+  # Python firewall & packet capture IDS/IPS engine
+  firewall-engine:
+    build: ../firewall-engine
+    container_name: cyberwall_firewall_engine
+    privileged: true
+    network_mode: "host" # Needs host NIC access to capture packets
+    environment:
+      - BACKEND_URL=http://localhost:5000
+      - API_KEY=cyberwall-xdr-engine-secret-token
+      - NETWORK_INTERFACE=
+    depends_on:
+      - backend
+    # Fallback restart if backend is booting
+    restart: on-failure
+
+volumes:
+  mongo_data:
+
+networks:
+  xdr_net:
+    driver: bridge

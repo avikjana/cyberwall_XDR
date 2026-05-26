@@ -1,0 +1,6 @@
+{
+  "python.analysis.extraPaths": [
+    "./firewall-engine"
+  ],
+  "python.analysis.moduleResolution": "standard"
+}
