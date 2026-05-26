@@ -16,6 +16,9 @@ from detection.detectors import (
   BruteForceDetector,
   TrafficSpikeDetector
 )
+from detection.ai_threat_engine import AITreatDetectionEngine
+from detection.advanced_threat_engine import AdvancedThreatEngine
+from detection.ti_client import ThreatIntelClient
 
 # Load env variables
 load_dotenv()
@@ -43,6 +46,11 @@ _batch_stop_event = threading.Event()
 
 # Initialize modules
 blocking_mgr = BlockingManager()
+ai_engine = AITreatDetectionEngine()
+adv_engine = AdvancedThreatEngine()
+ti_client = ThreatIntelClient()
+
+# Keep original detectors as fallback/legacy references
 port_scan_det = PortScanDetector()
 syn_flood_det = SYNFloodDetector()
 dns_anomaly_det = DNSAnomalyDetector()
@@ -145,6 +153,7 @@ def log_traffic_to_backend(packet_data):
 def packet_callback(packet_data):
   """
   Main packet handler triggered for every captured packet.
+  Executes AdvancedThreatEngine stateful IDS/IPS detectors.
   """
   src_ip = packet_data["sourceIp"]
   dst_ip = packet_data["destIp"]
@@ -161,33 +170,98 @@ def packet_callback(packet_data):
   # Submit traffic record (now batched — non-blocking)
   log_traffic_to_backend(packet_data)
 
-  # Run threat analytics
-  # 1. Port scan detection
-  is_scan, scan_desc = port_scan_det.analyze(src_ip, dst_port)
+  # Helper to submit alerts with rich threat metadata mapping
+  def trigger_alert(threat_name, details):
+    pkt_details = {
+      **packet_data,
+      "mitre_id": details.get("mitre_id", ""),
+      "mitre_name": details.get("mitre_name", ""),
+      "tags": ",".join(details.get("tags", []))
+    }
+    # Clean None values for DB schema compatibility
+    pkt_details = {k: str(v) for k, v in pkt_details.items() if v is not None}
+    
+    register_threat_with_backend(
+      src_ip,
+      dst_ip,
+      threat_name,
+      details.get("severity", "medium"),
+      details.get("description", ""),
+      pkt_details
+    )
+    # Block immediately if severity is high/critical
+    if details.get("severity") in ("high", "critical"):
+      request_ip_block_rule(src_ip, details.get("description", ""))
+
+  # 0. Threat Intelligence — instant check against known-bad IOCs
+  if ti_client.is_known_malicious(src_ip):
+    trigger_alert("Threat Intel Match", {
+      "severity": "critical",
+      "description": f"Source IP {src_ip} matches known-malicious IOC from threat intelligence feeds",
+      "mitre_id": "TA0001",
+      "mitre_name": "Initial Access",
+      "tags": ["threat-intel", "ioc-match", "blocklist"]
+    })
+    return
+
+  # Fire async TI enrichment for all observed IPs (non-blocking, populates session cache)
+  ti_client.enrich_ip_async(src_ip)
+
+  # 1. ARP Spoofing Detection
+  is_arp_spoof, arp_details = adv_engine.analyze_arp_spoofing(packet_data)
+  if is_arp_spoof:
+    trigger_alert("Custom Rule Violation", arp_details)
+    return
+
+  # 2. Port Scan Detection
+  is_scan, scan_details = adv_engine.analyze_port_scanning(src_ip, dst_port)
   if is_scan:
-    register_threat_with_backend(src_ip, dst_ip, "Port Scan", "high", scan_desc, packet_data)
-    request_ip_block_rule(src_ip, scan_desc)
+    trigger_alert("Port Scan", scan_details)
     return
 
-  # 2. SYN Flood detection
-  is_syn_flood, syn_desc = syn_flood_det.analyze(src_ip, flags)
+  # 3. SYN Flood Detection
+  is_syn_flood, syn_details = adv_engine.analyze_syn_flood(src_ip, flags)
   if is_syn_flood:
-    register_threat_with_backend(src_ip, dst_ip, "SYN Flood", "critical", syn_desc, packet_data)
-    request_ip_block_rule(src_ip, syn_desc)
+    trigger_alert("SYN Flood", syn_details)
     return
 
-  # 3. DNS Anomaly
-  if protocol in ("UDP", "DNS") and dns_query:
-    is_dns_anomaly, dns_desc = dns_anomaly_det.analyze(src_ip, dns_query)
-    if is_dns_anomaly:
-      register_threat_with_backend(src_ip, dst_ip, "DNS Anomaly", "medium", dns_desc, packet_data)
-      request_ip_block_rule(src_ip, dns_desc)
+  # 4. DNS Tunneling & DNS Query Flood Detection
+  if protocol == "DNS" or protocol == "UDP":
+    is_dns, dns_details = adv_engine.analyze_dns_tunneling(src_ip, dns_query)
+    if is_dns:
+      trigger_alert("DNS Anomaly", dns_details)
       return
 
-  # 4. Traffic Spike Detector
-  is_spike, spike_desc = traffic_spike_det.analyze(size)
+  # 5. C2 Beaconing Detection
+  is_beacon, beacon_details = adv_engine.analyze_beaconing(src_ip, dst_ip)
+  if is_beacon:
+    trigger_alert("Malicious IP Activity", beacon_details)
+    return
+
+  # 6. Suspicious Traffic Spike Detection
+  is_spike, spike_details = adv_engine.analyze_traffic_spike(size)
   if is_spike:
-    register_threat_with_backend(src_ip, dst_ip, "Suspicious Traffic Spike", "low", spike_desc, packet_data)
+    trigger_alert("Suspicious Traffic Spike", spike_details)
+    return
+
+  # 7. AI Anomaly Engine analysis
+  is_ai_anomaly, ai_score, ai_conf, ai_reason = ai_engine.analyze(packet_data)
+  if is_ai_anomaly:
+    description = f"AI Anomaly Engine: {ai_reason} (Score: {ai_score}%, Confidence: {ai_conf}%)"
+    severity = "medium"
+    if ai_score > 90:
+      severity = "critical"
+    elif ai_score > 80:
+      severity = "high"
+    
+    details = {
+      "severity": severity,
+      "description": description,
+      "mitre_id": "T1071",
+      "mitre_name": "Application Layer Protocol",
+      "tags": ["anomaly-detection", "ai"]
+    }
+    trigger_alert("Malicious IP Activity", details)
 
 
 # WebSocket triggers from Backend for manual controls
@@ -231,7 +305,7 @@ def main():
   connected = False
   for i in range(5):
     try:
-      sio.connect(BACKEND_URL)
+      sio.connect(BACKEND_URL, auth={"apiKey": API_KEY})
       sio.emit('join_soc')
       logger.info(f"Connected to backend WebSocket server at {BACKEND_URL}")
       connected = True

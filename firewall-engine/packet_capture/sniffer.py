@@ -34,54 +34,67 @@ class PacketSniffer:
     if not self.running:
       return
 
-    # Use getlayer() for efficient layer access — avoids repeated internal dict lookups
-    ip_layer = packet.getlayer(IP)
-    if ip_layer is None:
-      return
-
-    src_ip = ip_layer.src
-    dst_ip = ip_layer.dst
+    # Initialize packet metrics
+    src_ip = None
+    dst_ip = None
     protocol = "OTHER"
     src_port = None
     dst_port = None
     flags = ""
     dns_query = None
+    arp_op = None
+    src_mac = None
 
-    # TCP Layer
-    tcp_layer = packet.getlayer(TCP)
-    if tcp_layer is not None:
-      protocol = "TCP"
-      src_port = tcp_layer.sport
-      dst_port = tcp_layer.dport
-      flags = str(tcp_layer.flags)
-
+    # Check for ARP Layer
+    from scapy.all import ARP
+    arp_layer = packet.getlayer(ARP)
+    if arp_layer is not None:
+      src_ip = arp_layer.psrc
+      dst_ip = arp_layer.pdst
+      src_mac = arp_layer.hwsrc
+      arp_op = arp_layer.op
+      protocol = "ARP"
     else:
-      # UDP Layer
-      udp_layer = packet.getlayer(UDP)
-      if udp_layer is not None:
-        protocol = "UDP"
-        src_port = udp_layer.sport
-        dst_port = udp_layer.dport
+      # Check for IP Layer
+      ip_layer = packet.getlayer(IP)
+      if ip_layer is None:
+        return
+      src_ip = ip_layer.src
+      dst_ip = ip_layer.dst
 
-        # DNS query parsing
-        dns_layer = packet.getlayer(DNS)
-        if dns_layer is not None and dns_layer.qd:
-          protocol = "DNS"
-          try:
-            dnsqr_layer = packet.getlayer(DNSQR)
-            if dnsqr_layer is not None and dnsqr_layer.qname:
-              qname = dnsqr_layer.qname
-              if isinstance(qname, bytes):
-                dns_query = qname.decode('utf-8', errors='ignore').strip('.')
-              else:
-                dns_query = str(qname).strip('.')
-          except Exception as dns_err:
-            logger.debug(f"Failed to parse DNS query name: {dns_err}")
-
+      # TCP Layer
+      tcp_layer = packet.getlayer(TCP)
+      if tcp_layer is not None:
+        protocol = "TCP"
+        src_port = tcp_layer.sport
+        dst_port = tcp_layer.dport
+        flags = str(tcp_layer.flags)
       else:
-        # ICMP Layer
-        if packet.getlayer(ICMP) is not None:
-          protocol = "ICMP"
+        # UDP Layer
+        udp_layer = packet.getlayer(UDP)
+        if udp_layer is not None:
+          protocol = "UDP"
+          src_port = udp_layer.sport
+          dst_port = udp_layer.dport
+
+          # DNS query parsing
+          dns_layer = packet.getlayer(DNS)
+          if dns_layer is not None and dns_layer.qd:
+            protocol = "DNS"
+            try:
+              dnsqr_layer = packet.getlayer(DNSQR)
+              if dnsqr_layer is not None and dnsqr_layer.qname:
+                qname = dnsqr_layer.qname
+                if isinstance(qname, bytes):
+                  dns_query = qname.decode('utf-8', errors='ignore').strip('.')
+                else:
+                  dns_query = str(qname).strip('.')
+            except Exception as dns_err:
+              logger.debug(f"Failed to parse DNS query name: {dns_err}")
+        else:
+          # ICMP Layer
+          if packet.getlayer(ICMP) is not None:
+            protocol = "ICMP"
 
     packet_data = {
       "sourceIp": src_ip,
@@ -91,7 +104,9 @@ class PacketSniffer:
       "destPort": dst_port,
       "packetSize": len(packet),
       "flags": flags,
-      "dnsQuery": dns_query
+      "dnsQuery": dns_query,
+      "arp_op": arp_op,
+      "sourceMac": src_mac
     }
 
     try:
@@ -102,12 +117,13 @@ class PacketSniffer:
   def _run_sniff(self, interface):
     try:
       logger.info(f"Sniffer binding to interface: {interface or 'default'}")
-      # Run scapy sniff with lfilter to pre-filter only IP packets
+      from scapy.all import ARP
+      # Run scapy sniff with lfilter to pre-filter only IP and ARP packets
       sniff(
         iface=interface,
         prn=self._process_packet,
         store=0,
-        lfilter=lambda p: p.haslayer(IP),
+        lfilter=lambda p: p.haslayer(IP) or p.haslayer(ARP),
         stop_filter=lambda p: not self.running
       )
     except Exception as e:

@@ -24,20 +24,39 @@ services:
       retries: 5
       start_period: 10s
 
-  # Express REST & WebSocket API backend
-  backend:
-    build: ../backend
-    container_name: cyberwall_backend
+  # Redis event broker and cache
+  redis:
+    image: redis:7-alpine
+    container_name: cyberwall_redis
+    ports:
+      - "6379:6379"
+    networks:
+      - xdr_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2'
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Auth Service
+  auth-service:
+    build:
+      context: ../backend
+      dockerfile: services/auth-service/Dockerfile
+    container_name: cyberwall_auth_service
     environment:
-      - PORT=5000
+      - PORT=5001
       - MONGO_URI=mongodb://mongodb:27017/cyberwall_xdr
       - JWT_SECRET=supersecretcyberwallxdrkey12345
       - JWT_REFRESH_SECRET=supersecretrefreshcyberwallxdrkey54321
       - JWT_EXPIRE=1h
       - JWT_REFRESH_EXPIRE=7d
       - NODE_ENV=production
-    ports:
-      - "5000:5000"
     depends_on:
       mongodb:
         condition: service_healthy
@@ -46,21 +65,236 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.5'
+          cpus: '0.3'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "node", "-e", "const http = require('http'); const req = http.request({ host: 'localhost', port: 5001, path: '/health', timeout: 2000 }, (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }); req.on('error', () => { process.exit(1); }); req.end();"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Threat & Analytics Service
+  threat-service:
+    build:
+      context: ../backend
+      dockerfile: services/threat-service/Dockerfile
+    container_name: cyberwall_threat_service
+    environment:
+      - PORT=5002
+      - MONGO_URI=mongodb://mongodb:27017/cyberwall_xdr
+      - REDIS_URL=redis://redis:6379
+      - KAFKA_BROKERS=kafka:9092
+      - JWT_SECRET=supersecretcyberwallxdrkey12345
+      - NODE_ENV=production
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - xdr_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.4'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "node", "-e", "const http = require('http'); const req = http.request({ host: 'localhost', port: 5002, path: '/health', timeout: 2000 }, (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }); req.on('error', () => { process.exit(1); }); req.end();"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Apache Kafka Event Broker with Zookeeper
+  zookeeper:
+    image: bitnami/zookeeper:3.9
+    container_name: cyberwall_zookeeper
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    networks:
+      - xdr_net
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  kafka:
+    image: bitnami/kafka:3.7
+    container_name: cyberwall_kafka
+    ports:
+      - "9092:9092"
+    environment:
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://0.0.0.0:9092
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - ALLOW_PLAINTEXT_LISTENER=yes
+    depends_on:
+      - zookeeper
+    networks:
+      - xdr_net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ClickHouse Columnar Database (for fast analytics/aggregations)
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8-alpine
+    container_name: cyberwall_clickhouse
+    ports:
+      - "8123:8123"
+    networks:
+      - xdr_net
+    deploy:
+      resources:
+        limits:
           memory: 512M
+
+  # Elasticsearch Full-Text Search DB (for incident searching & SIEM events indexing)
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+    container_name: cyberwall_elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms384m -Xmx384m"
+    ports:
+      - "9200:9200"
+    networks:
+      - xdr_net
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+  # SIEM Service
+  siem-service:
+    build:
+      context: ../backend
+      dockerfile: services/siem-service/Dockerfile
+    container_name: cyberwall_siem_service
+    environment:
+      - PORT=5005
+      - KAFKA_BROKERS=kafka:9092
+      - ELASTICSEARCH_NODE=http://elasticsearch:9200
+      - CLICKHOUSE_HOST=http://clickhouse:8123
+      - REDIS_URL=redis://redis:6379
+      - NODE_ENV=production
+    depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      elasticsearch:
+        condition: service_started
+      clickhouse:
+        condition: service_started
+    networks:
+      - xdr_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.4'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "node", "-e", "const http = require('http'); const req = http.request({ host: 'localhost', port: 5005, path: '/health', timeout: 2000 }, (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }); req.on('error', () => { process.exit(1); }); req.end();"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # WebSocket Broadcast Service
+  websocket-service:
+    build:
+      context: ../backend
+      dockerfile: services/websocket-service/Dockerfile
+    container_name: cyberwall_websocket_service
+    environment:
+      - PORT=5003
+      - REDIS_URL=redis://redis:6379
+      - NODE_ENV=production
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - xdr_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "node", "-e", "const http = require('http'); const req = http.request({ host: 'localhost', port: 5003, path: '/health', timeout: 2000 }, (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }); req.on('error', () => { process.exit(1); }); req.end();"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Threat Intelligence Service
+  threat-intelligence:
+    build: ../threat-intelligence
+    container_name: cyberwall_threat_intelligence
+    environment:
+      - TI_PORT=5004
+      - REDIS_URL=redis://redis:6379
+      - FEED_SYNC_INTERVAL_MINUTES=30
+      - VIRUSTOTAL_API_KEY=${VIRUSTOTAL_API_KEY:-}
+      - ABUSEIPDB_API_KEY=${ABUSEIPDB_API_KEY:-}
+      - OTX_API_KEY=${OTX_API_KEY:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - xdr_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5004/api/ti/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # API Gateway Service
+  gateway:
+    build:
+      context: ../backend
+      dockerfile: gateway/Dockerfile
+    container_name: cyberwall_gateway
+    environment:
+      - PORT=5000
+      - AUTH_SERVICE_URL=http://auth-service:5001
+      - THREAT_SERVICE_URL=http://threat-service:5002
+      - WEBSOCKET_SERVICE_URL=http://websocket-service:5003
+      - TI_SERVICE_URL=http://threat-intelligence:5004
+      - NODE_ENV=production
+    ports:
+      - "5000:5000"
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      threat-service:
+        condition: service_healthy
+      websocket-service:
+        condition: service_healthy
+    networks:
+      - xdr_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 128M
     healthcheck:
       test: ["CMD", "node", "-e", "const http = require('http'); const req = http.request({ host: 'localhost', port: 5000, path: '/health', timeout: 2000 }, (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }); req.on('error', () => { process.exit(1); }); req.end();"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 15s
 
   # React Client Build container
   frontend:
     build: ../frontend
     container_name: cyberwall_frontend
     depends_on:
-      backend:
+      gateway:
         condition: service_healthy
     deploy:
       resources:
@@ -78,7 +312,8 @@ services:
       - "80:80"
     depends_on:
       - frontend
-      - backend
+      - gateway
+      - websocket-service
     deploy:
       resources:
         limits:
@@ -96,12 +331,45 @@ services:
     environment:
       - BACKEND_URL=http://localhost:5000
       - API_KEY=cyberwall-xdr-engine-secret-token
+      - TI_SERVICE_URL=http://localhost:5004
       - NETWORK_INTERFACE=
     depends_on:
-      backend:
+      gateway:
         condition: service_healthy
     # Fallback restart if backend is booting
     restart: on-failure
+
+  # Prometheus metrics collector
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: cyberwall_prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - xdr_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2'
+          memory: 256M
+
+  # Grafana dashboarding tool
+  grafana:
+    image: grafana/grafana:10.4.1
+    container_name: cyberwall_grafana
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - xdr_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2'
+          memory: 256M
 
 volumes:
   mongo_data:

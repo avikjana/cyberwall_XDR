@@ -18,7 +18,11 @@ const Traffic = () => {
   useEffect(() => {
     fetchInitialTraffic();
 
-    const socket = io('/', { path: '/socket.io' });
+    const token = localStorage.getItem('token');
+    const socket = io('/', { 
+      path: '/socket.io',
+      auth: { token }
+    });
     socket.emit('join_soc');
 
     socket.on('new_traffic', (newPacket) => {

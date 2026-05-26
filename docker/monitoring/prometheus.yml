@@ -1,0 +1,24 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'gateway'
+    static_configs:
+      - targets: ['gateway:5000']
+
+  - job_name: 'auth-service'
+    static_configs:
+      - targets: ['auth-service:5001']
+
+  - job_name: 'threat-service'
+    static_configs:
+      - targets: ['threat-service:5002']
+
+  - job_name: 'websocket-service'
+    static_configs:
+      - targets: ['websocket-service:5003']

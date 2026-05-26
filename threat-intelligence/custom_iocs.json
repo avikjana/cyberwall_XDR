@@ -1,0 +1,35 @@
+[
+  {
+    "type": "ip",
+    "indicator": "198.51.100.1",
+    "score": 95.0,
+    "verdict": "malicious",
+    "severity": "critical",
+    "tags": ["c2", "apt", "known-bad"],
+    "mitre": [{"id": "T1071", "name": "Application Layer Protocol"}],
+    "metadata": {"notes": "Known C2 server from internal incident"},
+    "ttl": 604800
+  },
+  {
+    "type": "domain",
+    "indicator": "evil-payload.example.com",
+    "score": 90.0,
+    "verdict": "malicious",
+    "severity": "high",
+    "tags": ["malware", "dropper"],
+    "mitre": [{"id": "T1587.001", "name": "Develop Capabilities: Malware"}],
+    "metadata": {"notes": "Observed dropping trojans"},
+    "ttl": 604800
+  },
+  {
+    "type": "hash",
+    "indicator": "d41d8cd98f00b204e9800998ecf8427e",
+    "score": 100.0,
+    "verdict": "malicious",
+    "severity": "critical",
+    "tags": ["ransomware"],
+    "mitre": [{"id": "T1486", "name": "Data Encrypted for Impact"}],
+    "metadata": {"notes": "Known ransomware payload hash"},
+    "ttl": 2592000
+  }
+]

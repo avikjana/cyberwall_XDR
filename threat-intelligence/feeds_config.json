@@ -1,0 +1,60 @@
+{
+  "feeds": {
+    "virustotal": {
+      "enabled": true,
+      "api_key_env": "VIRUSTOTAL_API_KEY",
+      "base_url": "https://www.virustotal.com/api/v3",
+      "rate_limit_per_min": 4,
+      "cache_ttl_seconds": 3600,
+      "endpoints": {
+        "ip": "/ip_addresses/{indicator}",
+        "domain": "/domains/{indicator}",
+        "url": "/urls",
+        "hash": "/files/{indicator}"
+      }
+    },
+    "abuseipdb": {
+      "enabled": true,
+      "api_key_env": "ABUSEIPDB_API_KEY",
+      "base_url": "https://api.abuseipdb.com/api/v2",
+      "rate_limit_per_min": 60,
+      "cache_ttl_seconds": 1800,
+      "endpoints": {
+        "ip_check": "/check",
+        "ip_report": "/report"
+      }
+    },
+    "alienvault_otx": {
+      "enabled": true,
+      "api_key_env": "OTX_API_KEY",
+      "base_url": "https://otx.alienvault.com/api/v1",
+      "rate_limit_per_min": 100,
+      "cache_ttl_seconds": 3600,
+      "endpoints": {
+        "ip": "/indicators/IPv4/{indicator}/general",
+        "domain": "/indicators/domain/{indicator}/general",
+        "hash": "/indicators/file/{indicator}/general"
+      }
+    }
+  },
+  "scoring": {
+    "thresholds": {
+      "benign": 15,
+      "suspicious": 40,
+      "malicious": 70
+    },
+    "weights": {
+      "virustotal_detections": 0.4,
+      "abuseipdb_confidence": 0.35,
+      "otx_pulse_count": 0.25
+    }
+  },
+  "mitre_mapping": {
+    "malware": { "id": "T1587.001", "name": "Develop Capabilities: Malware" },
+    "phishing": { "id": "T1566", "name": "Phishing" },
+    "c2": { "id": "T1071", "name": "Application Layer Protocol" },
+    "exfiltration": { "id": "T1048", "name": "Exfiltration Over Alternative Protocol" },
+    "scanning": { "id": "T1595", "name": "Active Scanning" },
+    "brute_force": { "id": "T1110", "name": "Brute Force" }
+  }
+}

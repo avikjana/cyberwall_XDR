@@ -1,0 +1,67 @@
+{
+  "rules": {
+    "port_scanning": {
+      "enabled": true,
+      "port_threshold": 15,
+      "time_window": 10,
+      "mitre_id": "T1046",
+      "mitre_name": "Network Service Discovery",
+      "severity": "high",
+      "tags": ["reconnaissance", "scanning"]
+    },
+    "syn_flood": {
+      "enabled": true,
+      "rate_threshold": 40,
+      "time_window": 5,
+      "mitre_id": "T1498.001",
+      "mitre_name": "Network Denial of Service: Direct Access Flood",
+      "severity": "critical",
+      "tags": ["dos", "flood"]
+    },
+    "dns_tunneling": {
+      "enabled": true,
+      "length_threshold": 60,
+      "rate_threshold": 20,
+      "time_window": 10,
+      "mitre_id": "T1071.004",
+      "mitre_name": "Application Layer Protocol: DNS",
+      "severity": "medium",
+      "tags": ["exfiltration", "c2"]
+    },
+    "brute_force": {
+      "enabled": true,
+      "login_threshold": 5,
+      "time_window": 60,
+      "mitre_id": "T1110",
+      "mitre_name": "Brute Force",
+      "severity": "high",
+      "tags": ["credential-access"]
+    },
+    "beaconing": {
+      "enabled": true,
+      "interval_tolerance": 0.15,
+      "min_hits": 8,
+      "time_window": 60,
+      "mitre_id": "T1071",
+      "mitre_name": "Application Layer Protocol",
+      "severity": "medium",
+      "tags": ["c2", "beaconing"]
+    },
+    "arp_spoofing": {
+      "enabled": true,
+      "mitre_id": "T1557.002",
+      "mitre_name": "Adversary-in-the-Middle: ARP Cache Poisoning",
+      "severity": "high",
+      "tags": ["credential-access", "defense-evasion"]
+    },
+    "traffic_spike": {
+      "enabled": true,
+      "bytes_threshold": 5000000,
+      "time_window": 5,
+      "mitre_id": "T1498",
+      "mitre_name": "Network Denial of Service",
+      "severity": "low",
+      "tags": ["dos"]
+    }
+  }
+}

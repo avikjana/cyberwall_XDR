@@ -30,7 +30,11 @@ const IncidentResponse = () => {
   useEffect(() => {
     fetchRules();
 
-    const socket = io('/', { path: '/socket.io' });
+    const token = localStorage.getItem('token');
+    const socket = io('/', { 
+      path: '/socket.io',
+      auth: { token }
+    });
     socket.emit('join_soc');
 
     socket.on('block_ip', () => {
