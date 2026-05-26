@@ -50,4 +50,9 @@ const AlertSchema = new mongoose.Schema({
   }
 });
 
+// Compound indexes for common query patterns
+AlertSchema.index({ status: 1, timestamp: -1 });    // getAlerts: filter by status, sort by timestamp
+AlertSchema.index({ severity: 1, timestamp: -1 });  // getAlerts: filter by severity, sort by timestamp
+AlertSchema.index({ sourceIp: 1, timestamp: -1 });  // getTopAttackers aggregation
+
 module.exports = mongoose.model('Alert', AlertSchema);

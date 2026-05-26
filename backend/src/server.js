@@ -6,6 +6,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const morgan = require('morgan');
 const dotenv = require('dotenv');
+const compression = require('compression');
 const connectDB = require('./config/db');
 
 // Load environment variables
@@ -22,7 +23,10 @@ const io = socketIo(server, {
   cors: {
     origin: '*', // Customize in production deployment
     methods: ['GET', 'POST']
-  }
+  },
+  // Performance: reduce ping frequency for less overhead
+  pingInterval: 25000,
+  pingTimeout: 20000
 });
 
 // Make socket.io instance globally accessible
@@ -31,8 +35,14 @@ global.io = io;
 // Setup Middlewares
 app.use(helmet());
 app.use(cors());
-app.use(express.json());
-app.use(morgan('dev'));
+// Gzip compression — reduces JSON response size by 60-80%
+app.use(compression());
+// Limit JSON payload size to prevent oversized requests from consuming excess memory
+app.use(express.json({ limit: '1mb' }));
+// Only use morgan logging in development — skip in production for throughput
+if (process.env.NODE_ENV !== 'production') {
+  app.use(morgan('dev'));
+}
 
 // Rate Limiting to prevent brute-force/DDoS on APIs
 const limiter = rateLimit({

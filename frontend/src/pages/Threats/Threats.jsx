@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import axios from 'axios';
 import { io } from 'socket.io-client';
 import { AlertCircle, ShieldAlert, CheckCircle, Search, ExternalLink } from 'lucide-react';
@@ -10,10 +10,11 @@ const Threats = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedAlert, setSelectedAlert] = useState(null);
   const [noteText, setNoteText] = useState('');
+  const searchDebounceRef = useRef(null);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
 
+  // ─── Socket connection: single instance, no dependency on filters ──────
   useEffect(() => {
-    fetchAlerts();
-
     const socket = io('/', { path: '/socket.io' });
     socket.emit('join_soc');
 
@@ -29,7 +30,28 @@ const Threats = () => {
     return () => {
       socket.disconnect();
     };
+  }, []); // Fixed: was [filters], creating a new socket on every filter change
+
+  // ─── Fetch alerts when filters change ──────────────────────────────────
+  useEffect(() => {
+    fetchAlerts();
   }, [filters]);
+
+  // ─── Debounce search input — 300ms delay ───────────────────────────────
+  useEffect(() => {
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+    }
+    searchDebounceRef.current = setTimeout(() => {
+      setDebouncedSearch(searchTerm);
+    }, 300);
+
+    return () => {
+      if (searchDebounceRef.current) {
+        clearTimeout(searchDebounceRef.current);
+      }
+    };
+  }, [searchTerm]);
 
   const fetchAlerts = async () => {
     setLoading(true);
@@ -72,11 +94,16 @@ const Threats = () => {
     }
   };
 
-  const filteredAlerts = alerts.filter(alert => 
-    alert.sourceIp.includes(searchTerm) || 
-    alert.threatType.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    alert.description.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // ─── Memoized filtered alerts — only recomputes when alerts or search change
+  const filteredAlerts = useMemo(() => {
+    if (!debouncedSearch) return alerts;
+    const lowerSearch = debouncedSearch.toLowerCase();
+    return alerts.filter(alert => 
+      alert.sourceIp.includes(debouncedSearch) || 
+      alert.threatType.toLowerCase().includes(lowerSearch) || 
+      alert.description.toLowerCase().includes(lowerSearch)
+    );
+  }, [alerts, debouncedSearch]);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

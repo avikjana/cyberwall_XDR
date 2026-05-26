@@ -2,11 +2,36 @@ const Alert = require('../models/alert');
 const Traffic = require('../models/traffic');
 const Rule = require('../models/rule');
 
+// ─── Simple in-memory cache with TTL ─────────────────────────────────────────
+const _cache = new Map();
+const CACHE_TTL_MS = 30000; // 30 seconds
+
+function getCached(key) {
+  const entry = _cache.get(key);
+  if (entry && Date.now() - entry.ts < CACHE_TTL_MS) {
+    return entry.data;
+  }
+  _cache.delete(key);
+  return null;
+}
+
+function setCache(key, data) {
+  _cache.set(key, { data, ts: Date.now() });
+}
+
 exports.getOverviewStats = async (req, res) => {
   try {
-    const totalTraffic = await Traffic.countDocuments();
-    const activeThreats = await Alert.countDocuments({ status: 'active' });
-    const totalBlocked = await Rule.countDocuments({ status: 'active' });
+    const cached = getCached('overview');
+    if (cached) {
+      return res.status(200).json({ success: true, data: cached });
+    }
+
+    // Run all three count queries in parallel instead of sequentially
+    const [totalTraffic, activeThreats, totalBlocked] = await Promise.all([
+      Traffic.estimatedDocumentCount(), // Much faster than countDocuments() for full-collection counts
+      Alert.countDocuments({ status: 'active' }),
+      Rule.countDocuments({ status: 'active' })
+    ]);
 
     // Mock CPU and Memory metrics that would come from a system manager
     const systemStatus = {
@@ -15,15 +40,10 @@ exports.getOverviewStats = async (req, res) => {
       disk: 38
     };
 
-    res.status(200).json({
-      success: true,
-      data: {
-        totalTraffic,
-        activeThreats,
-        totalBlocked,
-        systemStatus
-      }
-    });
+    const result = { totalTraffic, activeThreats, totalBlocked, systemStatus };
+    setCache('overview', result);
+
+    res.status(200).json({ success: true, data: result });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -31,6 +51,11 @@ exports.getOverviewStats = async (req, res) => {
 
 exports.getProtocolDistribution = async (req, res) => {
   try {
+    const cached = getCached('protocols');
+    if (cached) {
+      return res.status(200).json({ success: true, data: cached });
+    }
+
     const distribution = await Traffic.aggregate([
       {
         $group: {
@@ -49,6 +74,7 @@ exports.getProtocolDistribution = async (req, res) => {
       }
     ]);
 
+    setCache('protocols', distribution);
     res.status(200).json({ success: true, data: distribution });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -57,6 +83,11 @@ exports.getProtocolDistribution = async (req, res) => {
 
 exports.getTopAttackers = async (req, res) => {
   try {
+    const cached = getCached('attackers');
+    if (cached) {
+      return res.status(200).json({ success: true, data: cached });
+    }
+
     const attackers = await Alert.aggregate([
       {
         $group: {
@@ -77,6 +108,7 @@ exports.getTopAttackers = async (req, res) => {
       }
     ]);
 
+    setCache('attackers', attackers);
     res.status(200).json({ success: true, data: attackers });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -85,6 +117,11 @@ exports.getTopAttackers = async (req, res) => {
 
 exports.getThreatSeverityDistribution = async (req, res) => {
   try {
+    const cached = getCached('severity');
+    if (cached) {
+      return res.status(200).json({ success: true, data: cached });
+    }
+
     const distribution = await Alert.aggregate([
       {
         $group: {
@@ -101,6 +138,7 @@ exports.getThreatSeverityDistribution = async (req, res) => {
       }
     ]);
 
+    setCache('severity', distribution);
     res.status(200).json({ success: true, data: distribution });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -111,7 +149,7 @@ exports.getTrafficTimeline = async (req, res) => {
   try {
     // Return aggregated bandwidth/packets in 1-minute chunks for the last 30 minutes
     const dateLimit = new Date(Date.now() - 30 * 60 * 1000);
-    
+
     const timeline = await Traffic.aggregate([
       { $match: { timestamp: { $gte: dateLimit } } },
       {
@@ -131,7 +169,7 @@ exports.getTrafficTimeline = async (req, res) => {
     ]);
 
     const formattedTimeline = timeline.map(item => {
-      const { year, month, day, hour, minute } = item._id;
+      const { hour, minute } = item._id;
       const timeStr = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
       return {
         time: timeStr,

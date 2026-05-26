@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import axios from 'axios';
 import { io } from 'socket.io-client';
-import { Play, Pause, Activity, Filter, Search } from 'lucide-react';
+import { Play, Pause, Activity, Search } from 'lucide-react';
 
 const Traffic = () => {
   const [traffic, setTraffic] = useState([]);
@@ -9,6 +9,12 @@ const Traffic = () => {
   const [protocolFilter, setProtocolFilter] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
 
+  // Use ref for pause state so socket handler always reads current value
+  // without needing to be a dependency (which causes socket reconnection)
+  const isPausedRef = useRef(isPaused);
+  isPausedRef.current = isPaused;
+
+  // ─── Single socket connection — no dependency on isPaused ─────────────
   useEffect(() => {
     fetchInitialTraffic();
 
@@ -16,7 +22,8 @@ const Traffic = () => {
     socket.emit('join_soc');
 
     socket.on('new_traffic', (newPacket) => {
-      if (!isPaused) {
+      // Read from ref instead of closure — always has the latest value
+      if (!isPausedRef.current) {
         setTraffic(prev => [newPacket, ...prev.slice(0, 99)]); // Maintain max 100 rows in UI
       }
     });
@@ -24,7 +31,7 @@ const Traffic = () => {
     return () => {
       socket.disconnect();
     };
-  }, [isPaused]);
+  }, []); // Fixed: was [isPaused], creating a new socket on every pause toggle
 
   const fetchInitialTraffic = async () => {
     try {
@@ -37,13 +44,16 @@ const Traffic = () => {
     }
   };
 
-  const filteredTraffic = traffic.filter(item => {
-    const matchesProto = protocolFilter ? item.protocol === protocolFilter : true;
-    const matchesSearch = searchTerm 
-      ? item.sourceIp.includes(searchTerm) || item.destIp.includes(searchTerm)
-      : true;
-    return matchesProto && matchesSearch;
-  });
+  // ─── Memoized filtered traffic — only recomputes when inputs change ──
+  const filteredTraffic = useMemo(() => {
+    return traffic.filter(item => {
+      const matchesProto = protocolFilter ? item.protocol === protocolFilter : true;
+      const matchesSearch = searchTerm 
+        ? item.sourceIp.includes(searchTerm) || item.destIp.includes(searchTerm)
+        : true;
+      return matchesProto && matchesSearch;
+    });
+  }, [traffic, protocolFilter, searchTerm]);
 
   return (
     <div className="space-y-6">
@@ -115,7 +125,7 @@ const Traffic = () => {
             <tbody>
               {filteredTraffic.length > 0 ? (
                 filteredTraffic.map((pkt) => (
-                  <tr key={pkt._id || Math.random()} className="border-b border-slate-900/40 hover:bg-slate-900/20 text-slate-300">
+                  <tr key={pkt._id || `pkt-${pkt.timestamp}-${pkt.sourceIp}-${pkt.destPort}`} className="border-b border-slate-900/40 hover:bg-slate-900/20 text-slate-300">
                     <td className="p-4 text-slate-500 text-[11px]">
                       {new Date(pkt.timestamp).toLocaleTimeString()}
                     </td>

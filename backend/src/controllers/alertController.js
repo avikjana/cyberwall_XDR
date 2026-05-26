@@ -1,28 +1,33 @@
 const Alert = require('../models/alert');
-const Rule = require('../models/rule');
 
 exports.getAlerts = async (req, res) => {
   try {
     const { status, severity, threatType, page = 1, limit = 50 } = req.query;
     const filter = {};
+    const parsedLimit = Number(limit);
+    const parsedPage = Number(page);
 
     if (status) filter.status = status;
     if (severity) filter.severity = severity;
     if (threatType) filter.threatType = threatType;
 
-    const skipIndex = (page - 1) * limit;
-    const alerts = await Alert.find(filter)
-      .sort({ timestamp: -1 })
-      .limit(parseInt(limit))
-      .skip(skipIndex);
+    const skipIndex = (parsedPage - 1) * parsedLimit;
 
-    const total = await Alert.countDocuments(filter);
+    // Run find + count in parallel instead of sequentially
+    const [alerts, total] = await Promise.all([
+      Alert.find(filter)
+        .sort({ timestamp: -1 })
+        .limit(parsedLimit)
+        .skip(skipIndex)
+        .lean(),  // Return plain JS objects — ~3x faster serialization
+      Alert.countDocuments(filter)
+    ]);
 
     res.status(200).json({
       success: true,
       count: alerts.length,
-      totalPages: Math.ceil(total / limit),
-      currentPage: parseInt(page),
+      totalPages: Math.ceil(total / parsedLimit),
+      currentPage: parsedPage,
       data: alerts
     });
   } catch (error) {
@@ -34,10 +39,10 @@ exports.createAlert = async (req, res) => {
   try {
     // Internal endpoint for firewall engine
     const alert = await Alert.create(req.body);
-    
+
     // Broadcast via global Socket.io client if available (will bind in server.js)
     if (global.io) {
-      global.io.emit('new_alert', alert);
+      global.io.to('soc_channel').emit('new_alert', alert);
     }
 
     res.status(201).json({ success: true, data: alert });
@@ -57,14 +62,14 @@ exports.acknowledgeAlert = async (req, res) => {
         acknowledgedBy: req.user.id
       },
       { new: true }
-    );
+    ).lean();
 
     if (!alert) {
       return res.status(404).json({ success: false, error: 'Alert not found' });
     }
 
     if (global.io) {
-      global.io.emit('alert_updated', alert);
+      global.io.to('soc_channel').emit('alert_updated', alert);
     }
 
     res.status(200).json({ success: true, data: alert });
@@ -83,14 +88,14 @@ exports.resolveAlert = async (req, res) => {
         notes: notes || 'Resolved'
       },
       { new: true }
-    );
+    ).lean();
 
     if (!alert) {
       return res.status(404).json({ success: false, error: 'Alert not found' });
     }
 
     if (global.io) {
-      global.io.emit('alert_updated', alert);
+      global.io.to('soc_channel').emit('alert_updated', alert);
     }
 
     res.status(200).json({ success: true, data: alert });

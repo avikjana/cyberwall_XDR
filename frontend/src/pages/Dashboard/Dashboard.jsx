@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { io } from 'socket.io-client';
 import { 
@@ -7,7 +7,6 @@ import {
   Ban, 
   ShieldCheck, 
   Cpu, 
-  HardDrive, 
   TrendingUp 
 } from 'lucide-react';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip } from 'recharts';
@@ -23,25 +22,28 @@ const Dashboard = () => {
   const [liveTraffic, setLiveTraffic] = useState([]);
   const [timelineData, setTimelineData] = useState([]);
 
+  // ─── Throttled socket handlers using refs ──────────────────────────
+  const pendingTrafficRef = useRef([]);
+  const pendingAlertRef = useRef([]);
+  const flushIntervalRef = useRef(null);
+
   useEffect(() => {
     // Fetch initial statistical payloads
     fetchOverviewStats();
     fetchTimelineData();
     fetchRecentAlerts();
 
-    // Setup Socket connection
-    const socket = io('/', { path: '/socket.io' }); // Will resolve via nginx or local proxy
-
+    // Setup Socket connection (single instance)
+    const socket = io('/', { path: '/socket.io' });
     socket.emit('join_soc');
 
+    // Buffer incoming socket events — flush to state every 1 second
     socket.on('new_alert', (alert) => {
-      setLiveAlerts(prev => [alert, ...prev.slice(0, 9)]);
-      setStats(prev => ({ ...prev, activeThreats: prev.activeThreats + 1 }));
+      pendingAlertRef.current.push(alert);
     });
 
     socket.on('new_traffic', (traffic) => {
-      setLiveTraffic(prev => [traffic, ...prev.slice(0, 9)]);
-      setStats(prev => ({ ...prev, totalTraffic: prev.totalTraffic + 1 }));
+      pendingTrafficRef.current.push(traffic);
     });
 
     socket.on('block_ip', () => {
@@ -52,7 +54,25 @@ const Dashboard = () => {
       setStats(prev => ({ ...prev, totalBlocked: Math.max(0, prev.totalBlocked - 1) }));
     });
 
+    // Flush buffered updates every 1 second — prevents per-packet re-renders
+    flushIntervalRef.current = setInterval(() => {
+      if (pendingAlertRef.current.length > 0) {
+        const newAlerts = pendingAlertRef.current;
+        pendingAlertRef.current = [];
+        setLiveAlerts(prev => [...newAlerts, ...prev].slice(0, 10));
+        setStats(prev => ({ ...prev, activeThreats: prev.activeThreats + newAlerts.length }));
+      }
+
+      if (pendingTrafficRef.current.length > 0) {
+        const newTraffic = pendingTrafficRef.current;
+        pendingTrafficRef.current = [];
+        setLiveTraffic(prev => [...newTraffic, ...prev].slice(0, 10));
+        setStats(prev => ({ ...prev, totalTraffic: prev.totalTraffic + newTraffic.length }));
+      }
+    }, 1000);
+
     return () => {
+      clearInterval(flushIntervalRef.current);
       socket.disconnect();
     };
   }, []);
@@ -89,6 +109,9 @@ const Dashboard = () => {
       console.error(err);
     }
   };
+
+  // ─── Memoized chart data to prevent unnecessary Recharts re-renders ──
+  const memoizedTimelineData = useMemo(() => timelineData, [timelineData]);
 
   return (
     <div className="space-y-6">
@@ -151,9 +174,9 @@ const Dashboard = () => {
             <span className="text-[10px] font-mono text-cyan-400">LIVE FEED</span>
           </div>
           <div className="h-64">
-            {timelineData.length > 0 ? (
+            {memoizedTimelineData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={timelineData}>
+                <AreaChart data={memoizedTimelineData}>
                   <defs>
                     <linearGradient id="colorTraffic" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.4}/>
@@ -239,7 +262,7 @@ const Dashboard = () => {
             {liveAlerts.length > 0 ? (
               liveAlerts.map((alert) => (
                 <div 
-                  key={alert._id || Math.random()} 
+                  key={alert._id || `alert-${alert.timestamp}-${alert.sourceIp}`} 
                   className="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800 hover:border-slate-700/80 transition-all flex items-center justify-between"
                 >
                   <div>
@@ -288,7 +311,7 @@ const Dashboard = () => {
               <tbody>
                 {liveTraffic.length > 0 ? (
                   liveTraffic.map((traffic) => (
-                    <tr key={traffic._id || Math.random()} className="border-b border-slate-900/60 hover:bg-slate-900/20 text-slate-300">
+                    <tr key={traffic._id || `traffic-${traffic.timestamp}-${traffic.sourceIp}`} className="border-b border-slate-900/60 hover:bg-slate-900/20 text-slate-300">
                       <td className="py-2 text-[10px] text-slate-500">{new Date(traffic.timestamp).toLocaleTimeString()}</td>
                       <td className="py-2">
                         <span className="px-1.5 py-0.5 rounded bg-slate-800 text-[10px] font-bold text-cyan-400">

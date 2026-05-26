@@ -1,4 +1,3 @@
-import os
 import platform
 import subprocess
 import logging
@@ -6,12 +5,15 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("BlockingManager")
 
+# Cache platform detection at module level — called once, not per-instance
+_PLATFORM = platform.system().lower()
+
 class BlockingManager:
   def __init__(self):
-    self.is_linux = platform.system().lower() == "linux"
-    self.is_windows = platform.system().lower() == "windows"
+    self.is_linux = _PLATFORM == "linux"
+    self.is_windows = _PLATFORM == "windows"
     self.active_blocks = set()
-    logger.info(f"BlockingManager initialized. Platform: {platform.system()} (Linux: {self.is_linux}, Windows: {self.is_windows})")
+    logger.info(f"BlockingManager initialized. Platform: {_PLATFORM} (Linux: {self.is_linux}, Windows: {self.is_windows})")
 
   def block_ip(self, ip, reason=""):
     if ip in self.active_blocks:
@@ -34,8 +36,9 @@ class BlockingManager:
     elif self.is_windows:
       try:
         # Add rule to Windows Defender Firewall to block inbound and outbound traffic
-        cmd_in = f'netsh advfirewall firewall add rule name="CyberWall_Block_{ip}" dir=in action=block remoteip={ip}'
-        cmd_out = f'netsh advfirewall firewall add rule name="CyberWall_Block_{ip}" dir=out action=block remoteip={ip}'
+        rule_name = f"CyberWall_Block_{ip}"
+        cmd_in = f'netsh advfirewall firewall add rule name="{rule_name}" dir=in action=block remoteip={ip}'
+        cmd_out = f'netsh advfirewall firewall add rule name="{rule_name}" dir=out action=block remoteip={ip}'
         subprocess.run(cmd_in, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         subprocess.run(cmd_out, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         logger.info(f"Successfully added Windows Defender block rule for {ip}")
@@ -82,17 +85,17 @@ class BlockingManager:
   def sync_rules(self, active_rules_from_backend):
     """
     Syncs local blocking rules with the list from the database.
+    Uses set operations for efficient diff calculation.
     """
     backend_ips = {rule['ip'] for rule in active_rules_from_backend}
-    
+    backend_reasons = {rule['ip']: rule.get('reason', 'Synced from SOC') for rule in active_rules_from_backend}
+
     # Unblock rules not in backend list
     to_unblock = self.active_blocks - backend_ips
-    for ip in list(to_unblock):
+    for ip in to_unblock:
       self.unblock_ip(ip)
 
-    # Block new rules from backend
-    for rule in active_rules_from_backend:
-      ip = rule['ip']
-      reason = rule.get('reason', 'Synced from SOC')
-      if ip not in self.active_blocks:
-        self.block_ip(ip, reason)
+    # Block new rules from backend — only IPs not already blocked
+    to_block = backend_ips - self.active_blocks
+    for ip in to_block:
+      self.block_ip(ip, backend_reasons.get(ip, 'Synced from SOC'))

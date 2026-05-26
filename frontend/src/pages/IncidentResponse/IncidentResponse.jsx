@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { io } from 'socket.io-client';
 import { useAuth } from '../../context/AuthContext';
@@ -12,9 +12,20 @@ const IncidentResponse = () => {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const fetchDebounceRef = useRef(null);
 
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
+
+  // Debounced fetchRules — prevents rapid-fire API calls when multiple IPs are blocked quickly
+  const debouncedFetchRules = useCallback(() => {
+    if (fetchDebounceRef.current) {
+      clearTimeout(fetchDebounceRef.current);
+    }
+    fetchDebounceRef.current = setTimeout(() => {
+      fetchRules();
+    }, 500);
+  }, []);
 
   useEffect(() => {
     fetchRules();
@@ -22,18 +33,21 @@ const IncidentResponse = () => {
     const socket = io('/', { path: '/socket.io' });
     socket.emit('join_soc');
 
-    socket.on('block_ip', (data) => {
-      fetchRules();
+    socket.on('block_ip', () => {
+      debouncedFetchRules(); // Debounced instead of immediate
     });
 
-    socket.on('unblock_ip', (data) => {
-      fetchRules();
+    socket.on('unblock_ip', () => {
+      debouncedFetchRules(); // Debounced instead of immediate
     });
 
     return () => {
+      if (fetchDebounceRef.current) {
+        clearTimeout(fetchDebounceRef.current);
+      }
       socket.disconnect();
     };
-  }, []);
+  }, [debouncedFetchRules]);
 
   const fetchRules = async () => {
     try {

@@ -1,7 +1,8 @@
 import os
 import time
-import asyncio
 import logging
+import threading
+from collections import deque
 import requests
 import socketio
 from dotenv import load_dotenv
@@ -25,6 +26,21 @@ logger = logging.getLogger("FirewallEngine")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:5000")
 API_KEY = os.getenv("API_KEY", "cyberwall-xdr-engine-secret-token")
 
+# ─── Connection-pooled HTTP session (reuses TCP connections) ──────────────────
+_http_session = requests.Session()
+_http_session.headers.update({"Content-Type": "application/json"})
+# Connection pool tuning — up to 10 concurrent connections to backend
+adapter = requests.adapters.HTTPAdapter(pool_connections=5, pool_maxsize=10, max_retries=2)
+_http_session.mount("http://", adapter)
+_http_session.mount("https://", adapter)
+
+# ─── Traffic batch buffer ─────────────────────────────────────────────────────
+_traffic_buffer = deque(maxlen=500)  # Safety cap to prevent unbounded growth
+_traffic_buffer_lock = threading.Lock()
+_BATCH_SIZE = 50
+_BATCH_INTERVAL = 2.0  # seconds
+_batch_stop_event = threading.Event()
+
 # Initialize modules
 blocking_mgr = BlockingManager()
 port_scan_det = PortScanDetector()
@@ -36,9 +52,39 @@ traffic_spike_det = TrafficSpikeDetector()
 # Socket.IO Client for real-time bi-directional messaging
 sio = socketio.Client()
 
+def _flush_traffic_buffer():
+  """Drain pending traffic entries and POST them in a single batch."""
+  with _traffic_buffer_lock:
+    if not _traffic_buffer:
+      return
+    batch = list(_traffic_buffer)
+    _traffic_buffer.clear()
+
+  if not batch:
+    return
+
+  try:
+    url = f"{BACKEND_URL}/api/traffic/batch"
+    _http_session.post(url, json={"entries": batch}, timeout=5)
+  except Exception:
+    # Fallback: try sending individually via original endpoint
+    try:
+      url = f"{BACKEND_URL}/api/traffic"
+      for entry in batch:
+        _http_session.post(url, json=entry, timeout=2)
+    except Exception:
+      pass  # Fail silently to avoid throttling log stdout
+
+def _traffic_flush_loop():
+  """Background thread that periodically flushes the traffic buffer."""
+  while not _batch_stop_event.is_set():
+    _batch_stop_event.wait(timeout=_BATCH_INTERVAL)
+    _flush_traffic_buffer()
+
 def register_threat_with_backend(src_ip, dst_ip, threat_type, severity, description, packet_details=None):
   """
   Submits an incident report back to Express backend REST endpoint.
+  Uses connection-pooled session for efficiency.
   """
   try:
     url = f"{BACKEND_URL}/api/alerts"
@@ -50,7 +96,7 @@ def register_threat_with_backend(src_ip, dst_ip, threat_type, severity, descript
       "description": description,
       "packetDetails": packet_details or {}
     }
-    res = requests.post(url, json=payload, timeout=5)
+    res = _http_session.post(url, json=payload, timeout=5)
     if res.status_code == 201:
       logger.info(f"Registered threat alert on backend: {threat_type} from {src_ip}")
     else:
@@ -61,43 +107,40 @@ def register_threat_with_backend(src_ip, dst_ip, threat_type, severity, descript
 def request_ip_block_rule(ip, reason):
   """
   Instructs backend to register IP as a system rule.
+  Skips HTTP call if IP is already blocked locally.
   """
+  # Early return if already blocked — avoids redundant HTTP calls
+  if ip in blocking_mgr.active_blocks:
+    return
+
   try:
-    url = f"{BACKEND_URL}/api/rules/block"
-    payload = {
-      "ip": ip,
-      "reason": reason,
-      "duration": 60 # Default to 60 minutes block
-    }
-    # Auto-blocking requires authentication. In production, we'd use a service JWT.
-    # We will invoke standard REST rule API. Since backend rules allow rules to be registered
-    # without admin tokens under specific security bypass or custom service headers,
-    # let's make sure the backend allows this. Let's send the block IP rule.
-    # Note: On backend we protected POST /rules/block with admin token. 
-    # Let's bypass or provide user mock auth headers, or we can simply post directly.
-    # To bypass, we'll post rule.
-    # Actually, the backend rules router protects with `protect` & `authorize('admin')`.
-    # Let's make sure the engine can authenticate, or let's create a temporary backend token
-    # or have the backend skip authentication for local services (like localhost/docker internal engine).
-    # Since they run on the same network, let's just make the request.
-    # Wait, we can pass a shared service token in authorization headers!
-    # Let's check backend auth.js. It requires `Bearer` token.
-    # Let's construct a token or let's use a secret bypass header, or log it locally.
-    # For now, let's also block it locally immediately via blocking_mgr.
     blocking_mgr.block_ip(ip, reason)
   except Exception as e:
     logger.error(f"Error blocking IP: {e}")
 
 def log_traffic_to_backend(packet_data):
   """
-  Sends traffic statistical reports.
+  Queues traffic data for batched submission instead of per-packet HTTP POST.
   """
-  try:
-    url = f"{BACKEND_URL}/api/traffic"
-    requests.post(url, json=packet_data, timeout=2)
-  except Exception:
-    # Fail silently to avoid throttling log stdout
-    pass
+  with _traffic_buffer_lock:
+    _traffic_buffer.append(packet_data)
+    # Flush immediately if buffer hits batch size threshold
+    if len(_traffic_buffer) >= _BATCH_SIZE:
+      batch = list(_traffic_buffer)
+      _traffic_buffer.clear()
+
+  # If we got a batch to flush, do it outside the lock
+  if 'batch' in dir():
+    try:
+      url_batch = f"{BACKEND_URL}/api/traffic/batch"
+      _http_session.post(url_batch, json={"entries": batch}, timeout=5)
+    except Exception:
+      try:
+        url = f"{BACKEND_URL}/api/traffic"
+        for entry in batch:
+          _http_session.post(url, json=entry, timeout=2)
+      except Exception:
+        pass
 
 def packet_callback(packet_data):
   """
@@ -115,7 +158,7 @@ def packet_callback(packet_data):
   if src_ip in blocking_mgr.active_blocks:
     return
 
-  # Submit traffic record
+  # Submit traffic record (now batched — non-blocking)
   log_traffic_to_backend(packet_data)
 
   # Run threat analytics
@@ -134,7 +177,7 @@ def packet_callback(packet_data):
     return
 
   # 3. DNS Anomaly
-  if protocol in ["UDP", "DNS"] and dns_query:
+  if protocol in ("UDP", "DNS") and dns_query:
     is_dns_anomaly, dns_desc = dns_anomaly_det.analyze(src_ip, dns_query)
     if is_dns_anomaly:
       register_threat_with_backend(src_ip, dst_ip, "DNS Anomaly", "medium", dns_desc, packet_data)
@@ -164,13 +207,11 @@ def on_unblock_ip(data):
 def sync_active_rules():
   """
   Periodically pull active rules from the backend.
+  Uses connection-pooled session.
   """
   try:
     url = f"{BACKEND_URL}/api/rules"
-    # To get around auth requirements for rule queries, the engine can authenticate.
-    # In this version, we will hit the REST service.
-    # Let's perform a simple GET call.
-    res = requests.get(url, timeout=5)
+    res = _http_session.get(url, timeout=5)
     if res.status_code == 200:
       rules = res.json().get('data', [])
       blocking_mgr.sync_rules(rules)
@@ -180,7 +221,12 @@ def sync_active_rules():
 
 def main():
   logger.info("Starting CyberWall XDR Firewall Engine...")
-  
+
+  # Start the background traffic flush thread
+  flush_thread = threading.Thread(target=_traffic_flush_loop, daemon=True)
+  flush_thread.start()
+  logger.info("Traffic batch flush thread started.")
+
   # Initialize connection to backend socket server
   connected = False
   for i in range(5):
@@ -210,9 +256,14 @@ def main():
   except KeyboardInterrupt:
     logger.info("Shutdown signal received.")
   finally:
+    # Signal batch flush thread to stop and do final flush
+    _batch_stop_event.set()
+    _flush_traffic_buffer()
+    flush_thread.join(timeout=3)
     sniffer.stop()
     if sio.connected:
       sio.disconnect()
+    _http_session.close()
     logger.info("Firewall Engine stopped cleanly.")
 
 if __name__ == "__main__":

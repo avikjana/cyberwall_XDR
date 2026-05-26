@@ -5,12 +5,24 @@ services:
   mongodb:
     image: mongo:6.0
     container_name: cyberwall_mongodb
+    command: mongod --wiredTigerCacheSizeGB 0.5
     ports:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
     networks:
       - xdr_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1024M
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # Express REST & WebSocket API backend
   backend:
@@ -27,16 +39,34 @@ services:
     ports:
       - "5000:5000"
     depends_on:
-      - mongodb
+      mongodb:
+        condition: service_healthy
     networks:
       - xdr_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "node", "-e", "const http = require('http'); const req = http.request({ host: 'localhost', port: 5000, path: '/health', timeout: 2000 }, (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }); req.on('error', () => { process.exit(1); }); req.end();"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   # React Client Build container
   frontend:
     build: ../frontend
     container_name: cyberwall_frontend
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
     networks:
       - xdr_net
 
@@ -49,6 +79,11 @@ services:
     depends_on:
       - frontend
       - backend
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
     networks:
       - xdr_net
 
@@ -63,7 +98,8 @@ services:
       - API_KEY=cyberwall-xdr-engine-secret-token
       - NETWORK_INTERFACE=
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     # Fallback restart if backend is booting
     restart: on-failure
 
