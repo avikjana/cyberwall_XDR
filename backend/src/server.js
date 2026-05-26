@@ -37,7 +37,7 @@ app.use(morgan('dev'));
 // Rate Limiting to prevent brute-force/DDoS on APIs
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 300, // limit each IP to 300 requests per windowMs
+  max: process.env.NODE_ENV === 'development' ? 100000 : 300, // limit each IP to 300 requests per windowMs
   message: { success: false, error: 'Too many requests from this IP, please try again later.' }
 });
 app.use('/api/', limiter);
