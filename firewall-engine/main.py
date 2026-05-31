@@ -310,6 +310,9 @@ def on_block_ip(data):
   logger.info(f"Received WebSocket instruction to block {rule_type}: {ip}")
   if rule_type == 'DOMAIN':
     blocking_mgr.block_domain(ip)
+    resolved_ip = data.get('resolvedIp')
+    if resolved_ip and resolved_ip != 'N/A' and resolved_ip != '0.0.0.0':
+      blocking_mgr.block_ip(resolved_ip, f"Domain Block ({ip}): {reason}")
   else:
     blocking_mgr.block_ip(ip, reason)
 
@@ -320,6 +323,9 @@ def on_unblock_ip(data):
   logger.info(f"Received WebSocket instruction to unblock {rule_type}: {ip}")
   if rule_type == 'DOMAIN':
     blocking_mgr.unblock_domain(ip)
+    resolved_ip = data.get('resolvedIp')
+    if resolved_ip and resolved_ip != 'N/A' and resolved_ip != '0.0.0.0':
+      blocking_mgr.unblock_ip(resolved_ip)
   else:
     blocking_mgr.unblock_ip(ip)
 

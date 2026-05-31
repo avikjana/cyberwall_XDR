@@ -102,9 +102,25 @@ class BlockingManager:
     Syncs local blocking rules with the list from the database.
     Uses set operations for efficient diff calculation.
     """
-    backend_ips = {rule['ip'] for rule in active_rules_from_backend if rule.get('type', 'IP') == 'IP'}
-    backend_domains = {rule['ip'].lower().strip('.') for rule in active_rules_from_backend if rule.get('type', 'IP') == 'DOMAIN'}
-    backend_reasons = {rule['ip']: rule.get('reason', 'Synced from SOC') for rule in active_rules_from_backend}
+    backend_ips = set()
+    backend_domains = set()
+    backend_reasons = {}
+
+    for rule in active_rules_from_backend:
+      reason = rule.get('reason', 'Synced from SOC')
+      if rule.get('type', 'IP') == 'IP':
+        ip_val = rule['ip']
+        backend_ips.add(ip_val)
+        backend_reasons[ip_val] = reason
+      elif rule.get('type', 'IP') == 'DOMAIN':
+        domain_val = rule['ip'].lower().strip('.')
+        backend_domains.add(domain_val)
+        backend_reasons[rule['ip']] = reason
+        # Also block resolved IP for the domain if available
+        resolved_ip = rule.get('resolvedIp')
+        if resolved_ip and resolved_ip != 'N/A' and resolved_ip != '0.0.0.0':
+          backend_ips.add(resolved_ip)
+          backend_reasons[resolved_ip] = f"Domain Block ({rule['ip']}): {reason}"
 
     # Unblock rules not in backend list
     to_unblock = self.active_blocks - backend_ips

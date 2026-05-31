@@ -118,7 +118,14 @@ exports.blockIp = async (req, res) => {
     }
 
     // Publish to Redis Pub/Sub so WebSocket Service broadcasts to Firewall Engine
-    publishEvent('block_ip', { ip, type: ruleType, action: 'BLOCK' });
+    publishEvent('block_ip', { 
+      ip, 
+      type: ruleType, 
+      action: 'BLOCK', 
+      resolvedIp, 
+      resolvedDomain, 
+      reason 
+    });
     logAuditEvent('BLOCK_IP', req.user, ip, 'SUCCESS', { reason, duration, type: ruleType, resolvedDomain, resolvedIp });
 
     res.status(201).json({ success: true, data: rule });
@@ -143,7 +150,12 @@ exports.unblockIp = async (req, res) => {
     }
 
     // Publish to Redis Pub/Sub with target type
-    publishEvent('unblock_ip', { ip, type: rule.type, action: 'UNBLOCK' });
+    publishEvent('unblock_ip', { 
+      ip, 
+      type: rule.type, 
+      action: 'UNBLOCK', 
+      resolvedIp: rule.resolvedIp 
+    });
     logAuditEvent('UNBLOCK_IP', req.user, ip, 'SUCCESS');
 
     res.status(200).json({ success: true, data: rule });

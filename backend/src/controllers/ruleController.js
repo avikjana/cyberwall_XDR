@@ -116,7 +116,14 @@ exports.blockIp = async (req, res) => {
 
     // Broadcast update so Firewall Engine syncs rules
     if (global.io) {
-      global.io.emit('block_ip', { ip, type: ruleType, action: 'BLOCK' });
+      global.io.emit('block_ip', { 
+        ip, 
+        type: ruleType, 
+        action: 'BLOCK', 
+        resolvedIp, 
+        resolvedDomain, 
+        reason 
+      });
     }
 
     res.status(201).json({ success: true, data: rule });
@@ -140,7 +147,12 @@ exports.unblockIp = async (req, res) => {
 
     // Broadcast update to Firewall Engine
     if (global.io) {
-      global.io.emit('unblock_ip', { ip, type: rule.type, action: 'UNBLOCK' });
+      global.io.emit('unblock_ip', { 
+        ip, 
+        type: rule.type, 
+        action: 'UNBLOCK', 
+        resolvedIp: rule.resolvedIp 
+      });
     }
 
     res.status(200).json({ success: true, data: rule });
