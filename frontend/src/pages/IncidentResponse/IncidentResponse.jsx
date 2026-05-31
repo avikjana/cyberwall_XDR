@@ -7,6 +7,7 @@ import { ShieldAlert, Plus, Trash2, Ban } from 'lucide-react';
 const IncidentResponse = () => {
   const [rules, setRules] = useState([]);
   const [ipAddress, setIpAddress] = useState('');
+  const [ruleType, setRuleType] = useState('IP');
   const [blockReason, setBlockReason] = useState('');
   const [duration, setDuration] = useState('60');
   const [error, setError] = useState('');
@@ -79,12 +80,13 @@ const IncidentResponse = () => {
     try {
       const res = await axios.post('/api/rules/block', {
         ip: ipAddress,
+        type: ruleType,
         reason: blockReason,
         duration: parseInt(duration)
       });
 
       if (res.data.success) {
-        setSuccess(`Successfully blocklisted IP: ${ipAddress}`);
+        setSuccess(`Successfully added rule: ${ipAddress}`);
         setIpAddress('');
         setBlockReason('');
         fetchRules();
@@ -105,7 +107,7 @@ const IncidentResponse = () => {
     try {
       const res = await axios.delete(`/api/rules/unblock/${ip}`);
       if (res.data.success) {
-        setSuccess(`Successfully unblocked IP: ${ip}`);
+        setSuccess(`Successfully removed rule for: ${ip}`);
         fetchRules();
       }
     } catch (err) {
@@ -127,12 +129,30 @@ const IncidentResponse = () => {
 
         <form onSubmit={handleBlock} className="space-y-4">
           <div>
-            <label className="block text-xs font-mono font-semibold text-slate-400 mb-1.5 uppercase">IPv4 Address</label>
+            <label className="block text-xs font-mono font-semibold text-slate-400 mb-1.5 uppercase">Rule Type</label>
+            <select
+              value={ruleType}
+              disabled={!isAdmin}
+              onChange={(e) => {
+                setRuleType(e.target.value);
+                setIpAddress('');
+              }}
+              className="w-full bg-slate-950/60 border border-slate-800 text-slate-300 px-4 py-2.5 rounded-xl transition-all duration-300 outline-none text-sm disabled:opacity-50 appearance-none mb-3"
+            >
+              <option value="IP" className="bg-slate-950">IP Address</option>
+              <option value="DOMAIN" className="bg-slate-950">Domain Name (Web Content Filter)</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-mono font-semibold text-slate-400 mb-1.5 uppercase">
+              {ruleType === 'IP' ? 'IPv4 Address' : 'Domain Name / Pattern'}
+            </label>
             <input
               type="text"
               required
               disabled={!isAdmin}
-              placeholder="e.g. 185.120.44.12"
+              placeholder={ruleType === 'IP' ? 'e.g. 185.120.44.12' : 'e.g. facebook.com'}
               value={ipAddress}
               onChange={(e) => setIpAddress(e.target.value)}
               className="w-full bg-slate-950/60 border border-slate-800 text-slate-200 px-4 py-2.5 rounded-xl transition-all duration-300 outline-none text-sm disabled:opacity-50"
@@ -145,7 +165,7 @@ const IncidentResponse = () => {
               type="text"
               required
               disabled={!isAdmin}
-              placeholder="Port scan threshold exceeded"
+              placeholder={ruleType === 'IP' ? 'Port scan threshold exceeded' : 'Pornographic / Restricted content policy'}
               value={blockReason}
               onChange={(e) => setBlockReason(e.target.value)}
               className="w-full bg-slate-950/60 border border-slate-800 text-slate-200 px-4 py-2.5 rounded-xl transition-all duration-300 outline-none text-sm disabled:opacity-50"
@@ -188,14 +208,15 @@ const IncidentResponse = () => {
       <div className="lg:col-span-2 glass-card p-6 rounded-2xl">
         <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
           <ShieldAlert className="w-5 h-5 text-cyan-400" />
-          <span>Active IP Blocking Rules</span>
+          <span>Active Firewall & Content Filter Rules</span>
         </h3>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs font-mono">
             <thead>
               <tr className="border-b border-cyber-border text-slate-400 pb-2">
-                <th className="pb-2">Blocked IP</th>
+                <th className="pb-2">Target Indicator</th>
+                <th className="pb-2">Type</th>
                 <th className="pb-2">Trigger Incident</th>
                 <th className="pb-2">Operator</th>
                 <th className="pb-2">Expires At</th>
@@ -204,10 +225,31 @@ const IncidentResponse = () => {
             </thead>
             <tbody>
               {rules.length > 0 ? (
-                rules.map((rule) => (
+                 rules.map((rule) => (
                   <tr key={rule._id} className="border-b border-slate-900/60 text-slate-300 hover:bg-slate-900/10">
-                    <td className="py-3 font-bold text-red-400">{rule.ip}</td>
-                    <td className="py-3 max-w-[200px] truncate">{rule.reason}</td>
+                    <td className="py-3 font-bold text-red-400 max-w-[180px] truncate" title={rule.ip}>
+                      <div>{rule.ip}</div>
+                      {rule.type === 'IP' && rule.resolvedDomain && rule.resolvedDomain !== 'N/A' && (
+                        <div className="text-[10px] text-slate-500 font-normal mt-0.5" title={rule.resolvedDomain}>
+                          {rule.resolvedDomain}
+                        </div>
+                      )}
+                      {rule.type === 'DOMAIN' && rule.resolvedIp && rule.resolvedIp !== 'N/A' && (
+                        <div className="text-[10px] text-slate-500 font-normal mt-0.5" title={rule.resolvedIp}>
+                          {rule.resolvedIp}
+                        </div>
+                      )}
+                    </td>
+                    <td className="py-3">
+                      <span className={`px-2 py-0.5 rounded text-[9px] font-bold ${
+                        rule.type === 'DOMAIN' 
+                          ? 'bg-cyan-950/50 border border-cyan-800 text-cyan-400' 
+                          : 'bg-red-950/50 border border-red-800 text-red-400'
+                      }`}>
+                        {rule.type || 'IP'}
+                      </span>
+                    </td>
+                    <td className="py-3 max-w-[200px] truncate" title={rule.reason}>{rule.reason}</td>
                     <td className="py-3">
                       <span className="px-1.5 py-0.5 rounded bg-slate-800 text-[10px] text-slate-400">
                         {rule.addedBy}
@@ -231,7 +273,7 @@ const IncidentResponse = () => {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={isAdmin ? 5 : 4} className="text-center py-6 text-slate-500">
+                  <td colSpan={isAdmin ? 6 : 5} className="text-center py-6 text-slate-500">
                     No active firewall blocklists.
                   </td>
                 </tr>

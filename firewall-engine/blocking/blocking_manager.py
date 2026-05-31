@@ -13,7 +13,22 @@ class BlockingManager:
     self.is_linux = _PLATFORM == "linux"
     self.is_windows = _PLATFORM == "windows"
     self.active_blocks = set()
+    self.blocked_domains = set()
     logger.info(f"BlockingManager initialized. Platform: {_PLATFORM} (Linux: {self.is_linux}, Windows: {self.is_windows})")
+
+  def block_domain(self, domain):
+    if not domain:
+      return
+    domain_clean = domain.lower().strip('.')
+    logger.info(f"Adding domain to content filter blocklist: {domain_clean}")
+    self.blocked_domains.add(domain_clean)
+
+  def unblock_domain(self, domain):
+    if not domain:
+      return
+    domain_clean = domain.lower().strip('.')
+    logger.info(f"Removing domain from content filter blocklist: {domain_clean}")
+    self.blocked_domains.discard(domain_clean)
 
   def block_ip(self, ip, reason=""):
     if ip in self.active_blocks:
@@ -87,7 +102,8 @@ class BlockingManager:
     Syncs local blocking rules with the list from the database.
     Uses set operations for efficient diff calculation.
     """
-    backend_ips = {rule['ip'] for rule in active_rules_from_backend}
+    backend_ips = {rule['ip'] for rule in active_rules_from_backend if rule.get('type', 'IP') == 'IP'}
+    backend_domains = {rule['ip'].lower().strip('.') for rule in active_rules_from_backend if rule.get('type', 'IP') == 'DOMAIN'}
     backend_reasons = {rule['ip']: rule.get('reason', 'Synced from SOC') for rule in active_rules_from_backend}
 
     # Unblock rules not in backend list
@@ -99,3 +115,7 @@ class BlockingManager:
     to_block = backend_ips - self.active_blocks
     for ip in to_block:
       self.block_ip(ip, backend_reasons.get(ip, 'Synced from SOC'))
+
+    # Sync blocked domains
+    self.blocked_domains = backend_domains
+    logger.info(f"Rules synced with backend. Blocked domains: {len(self.blocked_domains)}")

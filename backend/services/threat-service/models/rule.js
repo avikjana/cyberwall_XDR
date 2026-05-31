@@ -7,6 +7,11 @@ const RuleSchema = new mongoose.Schema({
     unique: true,
     index: true
   },
+  type: {
+    type: String,
+    enum: ['IP', 'DOMAIN'],
+    default: 'IP'
+  },
   reason: {
     type: String,
     required: true
@@ -31,6 +36,14 @@ const RuleSchema = new mongoose.Schema({
   },
   expiresAt: {
     type: Date
+  },
+  resolvedDomain: {
+    type: String,
+    default: 'N/A'
+  },
+  resolvedIp: {
+    type: String,
+    default: 'N/A'
   }
 });
 

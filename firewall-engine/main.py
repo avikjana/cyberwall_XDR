@@ -225,8 +225,45 @@ def packet_callback(packet_data):
     trigger_alert("SYN Flood", syn_details)
     return
 
-  # 4. DNS Tunneling & DNS Query Flood Detection
+  # 4. DNS Tunneling & DNS Query Flood Detection OR Web Content Filter Block
   if protocol == "DNS" or protocol == "UDP":
+    if dns_query:
+      query_lower = dns_query.lower().strip('.')
+      is_blocked = False
+      matched_domain = None
+      for blocked in blocking_mgr.blocked_domains:
+        if query_lower == blocked or query_lower.endswith('.' + blocked):
+          is_blocked = True
+          matched_domain = blocked
+          break
+
+      if is_blocked:
+        logger.info(f"DNS query for blocked website detected: {dns_query} (matched rule: {matched_domain})")
+        # Trigger alert
+        trigger_alert("Custom Rule Violation", {
+          "severity": "high",
+          "description": f"Web Content Filter: Blocked access attempt to website {dns_query}",
+          "mitre_id": "T1567",
+          "mitre_name": "Exfiltration Over Web Service",
+          "tags": ["content-filter", "policy-violation", "blocked-website"]
+        })
+
+        # Dynamically resolve IP and block it to prevent access to the website
+        def resolve_and_block(domain_to_resolve):
+          try:
+            import socket
+            addr_info = socket.getaddrinfo(domain_to_resolve, None)
+            resolved_ips = {info[4][0] for info in addr_info if ':' not in info[4][0]} # Only IPv4
+            for r_ip in resolved_ips:
+              if r_ip != "127.0.0.1" and r_ip != "0.0.0.0":
+                logger.info(f"Content Filter: Dynamically blocking IP {r_ip} for domain {domain_to_resolve}")
+                request_ip_block_rule(r_ip, f"Content Filter: Resolved IP for blocked domain {domain_to_resolve}")
+          except Exception as e:
+            logger.error(f"Failed to dynamically resolve and block IPs for {domain_to_resolve}: {e}")
+
+        threading.Thread(target=resolve_and_block, args=(dns_query,), daemon=True).start()
+        return
+
     is_dns, dns_details = adv_engine.analyze_dns_tunneling(src_ip, dns_query)
     if is_dns:
       trigger_alert("DNS Anomaly", dns_details)
@@ -268,15 +305,23 @@ def packet_callback(packet_data):
 @sio.on('block_ip')
 def on_block_ip(data):
   ip = data.get('ip')
+  rule_type = data.get('type', 'IP')
   reason = data.get('reason', 'Manual Block')
-  logger.info(f"Received WebSocket instruction to block IP: {ip}")
-  blocking_mgr.block_ip(ip, reason)
+  logger.info(f"Received WebSocket instruction to block {rule_type}: {ip}")
+  if rule_type == 'DOMAIN':
+    blocking_mgr.block_domain(ip)
+  else:
+    blocking_mgr.block_ip(ip, reason)
 
 @sio.on('unblock_ip')
 def on_unblock_ip(data):
   ip = data.get('ip')
-  logger.info(f"Received WebSocket instruction to unblock IP: {ip}")
-  blocking_mgr.unblock_ip(ip)
+  rule_type = data.get('type', 'IP')
+  logger.info(f"Received WebSocket instruction to unblock {rule_type}: {ip}")
+  if rule_type == 'DOMAIN':
+    blocking_mgr.unblock_domain(ip)
+  else:
+    blocking_mgr.unblock_ip(ip)
 
 def sync_active_rules():
   """
