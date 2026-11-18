@@ -106,7 +106,7 @@ services:
 
   # Apache Kafka Event Broker with Zookeeper
   zookeeper:
-    image: bitnami/zookeeper:3.9
+    image: soldevelo/zookeeper:3.9
     container_name: cyberwall_zookeeper
     environment:
       - ALLOW_ANONYMOUS_LOGIN=yes
@@ -118,7 +118,7 @@ services:
           memory: 128M
 
   kafka:
-    image: bitnami/kafka:3.7
+    image: soldevelo/kafka:3.7
     container_name: cyberwall_kafka
     ports:
       - "9092:9092"
